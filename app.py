@@ -27,6 +27,9 @@ app = Flask(__name__)
 
 app.secret_key = "casamento-izabella-anderson-2026"
 
+# Quantidade máxima de fotos permitidas por envio
+MAX_FOTOS_POR_ENVIO = 10
+
 
 # ------------------------------------------------------------
 # PASTA ONDE AS FOTOS SERÃO SALVAS
@@ -49,6 +52,7 @@ UPLOAD_FOLDER = os.path.join(
     BASE_DIR,
     "uploads"
 )
+UPLOAD_FOLDER = "/Volumes/CASAMENTO/fotos"
 
 
 # Banco SQLite
@@ -515,9 +519,11 @@ def index():
         ).strip()
 
 
-        foto = request.files.get(
-            "foto"
-        )
+        fotos = [
+            foto
+            for foto in request.files.getlist("foto")
+            if foto and foto.filename
+        ]
 
 
         nome_inicial = nome
@@ -535,100 +541,146 @@ def index():
             mensagem = "Informe onde aconteceu o momento."
 
 
-        elif not foto or not foto.filename:
+        elif not fotos:
 
-            mensagem = "Escolha uma foto."
+            mensagem = "Escolha pelo menos uma foto."
+
+
+        elif len(fotos) > MAX_FOTOS_POR_ENVIO:
+
+            mensagem = (
+                f"Você pode enviar no máximo "
+                f"{MAX_FOTOS_POR_ENVIO} fotos por vez."
+            )
 
 
         else:
 
-            agora = datetime.now().strftime(
-                "%Y%m%d_%H%M%S_%f"
-            )
-
-
-            extensao = os.path.splitext(
-                foto.filename
-            )[1].lower()
-
-
-            # HEIC/HEIF não é renderizado de forma confiável
-            # pelos navegadores. Convertemos para JPEG e
-            # guardamos somente o JPEG.
-            if extensao in [".heic", ".heif"]:
-
-                nome_arquivo = f"{agora}.jpg"
-
-                caminho = os.path.join(
-                    UPLOAD_FOLDER,
-                    nome_arquivo
-                )
-
-                imagem = Image.open(foto)
-
-                # Corrige a orientação que vem nos metadados
-                # das fotos tiradas pelo iPhone.
-                imagem = ImageOps.exif_transpose(imagem)
-
-                if imagem.mode != "RGB":
-                    imagem = imagem.convert("RGB")
-
-                imagem.save(
-                    caminho,
-                    "JPEG",
-                    quality=85,
-                    optimize=True
-                )
-
-            else:
-
-                if not extensao:
-                    extensao = ".jpg"
-
-                nome_arquivo = (
-                    f"{agora}{extensao}"
-                )
-
-                caminho = os.path.join(
-                    UPLOAD_FOLDER,
-                    nome_arquivo
-                )
-
-                foto.save(caminho)
-
-
             conn = get_db()
+            quantidade_enviada = 0
 
+            try:
 
-            conn.execute(
-                """
-                INSERT INTO fotos
-                (
-                    nome,
-                    local,
-                    arquivo,
-                    data_hora
-                )
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    nome,
-                    local,
-                    nome_arquivo,
-                    datetime.now().strftime(
-                        "%d/%m/%Y %H:%M:%S"
+                for foto in fotos:
+
+                    agora = datetime.now().strftime(
+                        "%Y%m%d_%H%M%S_%f"
                     )
+
+
+                    extensao = os.path.splitext(
+                        foto.filename
+                    )[1].lower()
+
+
+                    # HEIC/HEIF não é renderizado de forma confiável
+                    # pelos navegadores. Convertemos para JPEG e
+                    # guardamos somente o JPEG.
+                    if extensao in [".heic", ".heif"]:
+
+                        nome_arquivo = f"{agora}.jpg"
+
+                        caminho = os.path.join(
+                            UPLOAD_FOLDER,
+                            nome_arquivo
+                        )
+
+                        imagem = Image.open(foto)
+
+                        # Corrige a orientação que vem nos metadados
+                        # das fotos tiradas pelo iPhone.
+                        imagem = ImageOps.exif_transpose(imagem)
+
+                        if imagem.mode != "RGB":
+                            imagem = imagem.convert("RGB")
+
+                        imagem.save(
+                            caminho,
+                            "JPEG",
+                            quality=85,
+                            optimize=True
+                        )
+
+                    else:
+
+                        if not extensao:
+                            extensao = ".jpg"
+
+                        nome_arquivo = (
+                            f"{agora}{extensao}"
+                        )
+
+                        caminho = os.path.join(
+                            UPLOAD_FOLDER,
+                            nome_arquivo
+                        )
+
+                        foto.save(caminho)
+
+
+                    conn.execute(
+                        """
+                        INSERT INTO fotos
+                        (
+                            nome,
+                            local,
+                            arquivo,
+                            data_hora
+                        )
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            nome,
+                            local,
+                            nome_arquivo,
+                            datetime.now().strftime(
+                                "%d/%m/%Y %H:%M:%S"
+                            )
+                        )
+                    )
+
+                    quantidade_enviada += 1
+
+
+                conn.commit()
+
+            except Exception:
+
+                conn.rollback()
+                raise
+
+            finally:
+
+                conn.close()
+
+
+            return redirect(
+                url_for(
+                    "index",
+                    sucesso="1",
+                    quantidade=quantidade_enviada
                 )
             )
 
 
-            conn.commit()
+    # O sucesso é mostrado somente na página GET após o redirect.
+    if request.args.get("sucesso") == "1":
 
-            conn.close()
+        try:
+            quantidade = int(
+                request.args.get("quantidade", "1")
+            )
+        except ValueError:
+            quantidade = 1
 
-
+        if quantidade == 1:
             mensagem = (
                 "❤️ Foto recebida! "
+                "Obrigado por participar!"
+            )
+        else:
+            mensagem = (
+                f"❤️ {quantidade} fotos recebidas! "
                 "Obrigado por participar!"
             )
 
@@ -680,8 +732,46 @@ def index():
 
             {% if mensagem %}
 
-                <div class="mensagem">
-                    {{ mensagem }}
+                <div
+                    id="modalMensagem"
+                    class="modal-overlay"
+                >
+
+                    <div class="modal">
+
+                        <div class="modal-icone">
+                            {% if mensagem.startswith("❤️") %}
+                                ❤️
+                            {% else %}
+                                ⚠️
+                            {% endif %}
+                        </div>
+
+                        <h2>
+                            {% if mensagem.startswith("❤️") %}
+                                {% if "fotos" in mensagem %}
+                                    Fotos enviadas!
+                                {% else %}
+                                    Foto enviada!
+                                {% endif %}
+                            {% else %}
+                                Atenção
+                            {% endif %}
+                        </h2>
+
+                        <p>
+                            {{ mensagem }}
+                        </p>
+
+                        <button
+                            class="modal-botao"
+                            onclick="fecharModal()"
+                        >
+                            OK
+                        </button>
+
+                    </div>
+
                 </div>
 
             {% endif %}
@@ -805,16 +895,33 @@ def index():
 
 
                 <div class="titulo">
-                    📷 Escolha uma foto
+                    📷 Escolha uma ou no maximo 10 fotos
                 </div>
 
 
                 <input
+                    id="fotos"
                     type="file"
                     name="foto"
                     accept="image/*,.heic,.heif"
+                    multiple
                     required
+                    onchange="atualizarQuantidadeFotos()"
                 >
+
+
+                <div
+                    id="contadorFotos"
+                    style="
+                        text-align:center;
+                        color:#777;
+                        font-size:13px;
+                        margin-top:-10px;
+                        margin-bottom:15px;
+                    "
+                >
+                    Você pode enviar até {{ max_fotos }} fotos por vez.
+                </div>
 
 
                 <button
@@ -866,6 +973,84 @@ def index():
 
 
 <style>
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    padding: 20px;
+}
+
+.modal {
+    width: 100%;
+    max-width: 340px;
+    background: white;
+    border-radius: 18px;
+    padding: 28px 22px;
+    text-align: center;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+    animation: aparecerModal 0.25s ease;
+}
+
+.modal-icone {
+    font-size: 48px;
+    margin-bottom: 10px;
+}
+
+.modal h2 {
+    margin: 5px 0 10px;
+    color: #333;
+}
+
+.modal p {
+    color: #666;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.modal-botao {
+    margin-top: 15px;
+    width: 100%;
+    padding: 12px;
+    border: none;
+    border-radius: 10px;
+    background: #222;
+    color: white;
+    font-size: 15px;
+    cursor: pointer;
+}
+
+@keyframes aparecerModal {
+    from {
+        opacity: 0;
+        transform: scale(0.92);
+    }
+
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+.spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    margin-right: 7px;
+    border: 2px solid rgba(255,255,255,0.4);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: girar 0.8s linear infinite;
+    vertical-align: middle;
+}
+
+@keyframes girar {
+    to {
+        transform: rotate(360deg);
+    }
+}
 .rodape-casamento {
     text-align: center;
     font-family: 'Georgia', serif;
@@ -923,6 +1108,54 @@ def index():
 
         <script>
 
+        function fecharModal() {
+
+            var modal =
+                document.getElementById("modalMensagem");
+
+            if (modal) {
+                modal.remove();
+            }
+
+        }
+
+
+        // Depois de exibir o sucesso, limpa o parâmetro da URL.
+        // Assim, se o usuário voltar da galeria, a página inicial
+        // não volta a considerar a foto como recém-enviada.
+        document.addEventListener(
+            "DOMContentLoaded",
+            function() {
+
+                if (window.location.search.indexOf("sucesso=1") !== -1) {
+
+                    window.history.replaceState(
+                        {},
+                        document.title,
+                        window.location.pathname
+                    );
+
+                }
+
+            }
+        );
+
+
+        // Safari/iPhone e outros navegadores podem restaurar
+        // a página anterior diretamente do cache de navegação.
+        // Nesse caso, remove o modal que já foi exibido.
+        window.addEventListener(
+            "pageshow",
+            function(event) {
+
+                if (event.persisted) {
+                    fecharModal();
+                }
+
+            }
+        );
+
+
             function selecionarLocal(
                 botao,
                 local
@@ -977,6 +1210,72 @@ def index():
             );
 
 
+            function atualizarQuantidadeFotos() {
+
+                var campoFotos =
+                    document.getElementById("fotos");
+
+                var contador =
+                    document.getElementById("contadorFotos");
+
+                var botao =
+                    document.getElementById("botaoEnviar");
+
+                if (!campoFotos) {
+                    return;
+                }
+
+                var quantidade = campoFotos.files.length;
+
+                if (quantidade === 0) {
+
+                    if (contador) {
+                        contador.innerHTML =
+                            "Você pode enviar até {{ max_fotos }} fotos por vez.";
+                    }
+
+                    if (botao) {
+                        botao.innerHTML = "❤️ Enviar foto";
+                    }
+
+                    return;
+                }
+
+                if (quantidade > {{ max_fotos }}) {
+
+                    if (contador) {
+                        contador.innerHTML =
+                            "⚠️ Você selecionou " +
+                            quantidade +
+                            " fotos. O limite é {{ max_fotos }}.";
+                        contador.style.color = "#a00000";
+                    }
+
+                    if (botao) {
+                        botao.innerHTML =
+                            "⚠️ Limite de {{ max_fotos }} fotos";
+                    }
+
+                    return;
+                }
+
+                if (contador) {
+                    contador.style.color = "#777";
+                    contador.innerHTML =
+                        "📸 " + quantidade +
+                        (quantidade === 1
+                            ? " foto selecionada"
+                            : " fotos selecionadas");
+                }
+
+                if (botao) {
+                    botao.innerHTML =
+                        "❤️ Enviar " + quantidade +
+                        (quantidade === 1 ? " foto" : " fotos");
+                }
+            }
+
+
             // Mostra um "aguarde" durante o upload
             // e evita o envio duplicado.
             function prepararEnvio() {
@@ -1002,6 +1301,8 @@ def index():
 
                     botao.innerHTML =
                         "⏳ Enviando foto... aguarde";
+                    botao.innerHTML =
+                        '<span class="spinner"></span> ⏳  Enviando foto... aguarde';
 
                     botao.style.opacity = "0.65";
                     botao.style.cursor = "wait";
@@ -1019,6 +1320,8 @@ def index():
         """,
 
         style=STYLE,
+
+        max_fotos=MAX_FOTOS_POR_ENVIO,
 
         nome=nome_inicial,
 
@@ -1041,6 +1344,18 @@ def galeria():
     ).strip()
 
 
+    # Paginação da galeria.
+    # Mantemos a página leve mesmo quando houver muitas fotos.
+    try:
+        pagina = int(request.args.get("pagina", "1"))
+    except ValueError:
+        pagina = 1
+
+    if pagina < 1:
+        pagina = 1
+
+    fotos_por_pagina = 20
+
     conn = get_db()
 
 
@@ -1057,14 +1372,54 @@ def galeria():
 
     if local_filtro:
 
+        total_fotos = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM fotos
+            WHERE local = ?
+            """,
+            (local_filtro,)
+        ).fetchone()[0]
+
+    else:
+
+        total_fotos = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM fotos
+            """
+        ).fetchone()[0]
+
+
+    total_paginas = max(
+        1,
+        (total_fotos + fotos_por_pagina - 1)
+        // fotos_por_pagina
+    )
+
+
+    if pagina > total_paginas:
+        pagina = total_paginas
+
+
+    offset = (pagina - 1) * fotos_por_pagina
+
+
+    if local_filtro:
+
         fotos = conn.execute(
             """
             SELECT *
             FROM fotos
             WHERE local = ?
             ORDER BY id DESC
+            LIMIT ? OFFSET ?
             """,
-            (local_filtro,)
+            (
+                local_filtro,
+                fotos_por_pagina,
+                offset
+            )
         ).fetchall()
 
     else:
@@ -1074,7 +1429,12 @@ def galeria():
             SELECT *
             FROM fotos
             ORDER BY id DESC
-            """
+            LIMIT ? OFFSET ?
+            """,
+            (
+                fotos_por_pagina,
+                offset
+            )
         ).fetchall()
 
 
@@ -1219,6 +1579,68 @@ def galeria():
             {% endif %}
 
 
+            {% if total_paginas > 1 %}
+
+                <div
+                    style="
+                        display:flex;
+                        align-items:center;
+                        justify-content:center;
+                        gap:10px;
+                        margin-top:25px;
+                        flex-wrap:wrap;
+                    "
+                >
+
+                    {% if pagina > 1 %}
+
+                        <a
+                            href="{{ url_for('galeria', local=local_filtro, pagina=pagina-1) }}"
+                            class="botao-secundario"
+                            style="
+                                width:auto;
+                                margin-top:0;
+                                padding:10px 14px;
+                            "
+                        >
+                            ← Anteriores
+                        </a>
+
+                    {% endif %}
+
+
+                    <span
+                        style="
+                            color:#777;
+                            font-size:14px;
+                            padding:8px 4px;
+                        "
+                    >
+                        Página {{ pagina }} de {{ total_paginas }}
+                    </span>
+
+
+                    {% if pagina < total_paginas %}
+
+                        <a
+                            href="{{ url_for('galeria', local=local_filtro, pagina=pagina+1) }}"
+                            class="botao-secundario"
+                            style="
+                                width:auto;
+                                margin-top:0;
+                                padding:10px 14px;
+                            "
+                        >
+                            Próximas →
+                        </a>
+
+                    {% endif %}
+
+                </div>
+
+            {% endif %}
+
+
             <a
                 class="botao-secundario"
                 href="/"
@@ -1240,7 +1662,11 @@ def galeria():
 
         locais=locais,
 
-        local_filtro=local_filtro
+        local_filtro=local_filtro,
+
+        pagina=pagina,
+
+        total_paginas=total_paginas
     )
 
 
@@ -2208,6 +2634,28 @@ def admin():
                             {{ foto['data_hora'] }}
 
                         </div>
+                        <form
+                            method="POST"
+                            action="/admin/apagar-foto/{{ foto['id'] }}"
+                            onsubmit="return confirm(
+                                '⚠️ Tem certeza que deseja apagar esta foto do álbum?\\n\\nO arquivo original será mantido no PDrive.'
+                            );"
+                        >
+                            <button
+                                type="submit"
+                                style="
+                                    margin-top:10px;
+                                    background:#b91c1c;
+                                    color:white;
+                                    border:none;
+                                    padding:8px 12px;
+                                    border-radius:8px;
+                                    cursor:pointer;
+                                "
+                            >
+                                🗑️ Apagar foto
+                            </button>
+                        </form>
 
                     </div>
 
@@ -2251,6 +2699,25 @@ def admin():
         fotos=fotos
     )
 
+
+
+@app.route("/admin/apagar-foto/<int:id>", methods=["POST"])
+def admin_apagar_foto(id):
+
+    if not session.get("admin"):
+        return redirect(url_for("admin"))
+
+    conn = get_db()
+
+    conn.execute(
+        "DELETE FROM fotos WHERE id = ?",
+        (id,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return redirect(url_for("admin"))
 
 # ============================================================
 # LOGOUT
